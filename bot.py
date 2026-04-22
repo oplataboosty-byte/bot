@@ -420,7 +420,7 @@ async def cmd_start(message: Message, state: FSMContext):
     user_id  = message.from_user.id
     db_log("start", user_id, message.from_user.username)
     try:
-        await message.react([{"type": "emoji", "emoji": "🥰,🤙,😎"}])
+        await message.react([{"type": "emoji", "emoji": "🎉"}])
     except Exception:
         pass
 
