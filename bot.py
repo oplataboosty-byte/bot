@@ -474,7 +474,7 @@ async def go_main_menu(message: Message):
 @dp.message(F.text == "🎁 Ежедневный подарок")
 @spam_guard
 async def daily_gift(message: Message):
-    ROULETTE_URL = ""https://yrenertrial-xxxxx.netlify.app""  # замени на свой URL
+    ROULETTE_URL = "https://yrenertrial-xxxxx.netlify.app" # замени на свой URL
     kb = InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(
             text="🎰 Открыть рулетку",
