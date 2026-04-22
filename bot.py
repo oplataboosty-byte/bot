@@ -420,7 +420,7 @@ async def cmd_start(message: Message, state: FSMContext):
     user_id  = message.from_user.id
     db_log("start", user_id, message.from_user.username)
     try:
-        await message.react([{"type": "emoji", "emoji": "🥰"}])
+        await message.react([{"type": "emoji", "emoji": "🥰,🤙,😎"}])
     except Exception:
         pass
 
@@ -474,7 +474,7 @@ async def go_main_menu(message: Message):
 @dp.message(F.text == "🎁 Ежедневный подарок")
 @spam_guard
 async def daily_gift(message: Message):
-    ROULETTE_URL = "https://yrenertrial.netlify.app/index.html"  # замени на свой URL
+    ROULETTE_URL = ""https://yrenertrial-xxxxx.netlify.app""  # замени на свой URL
     kb = InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(
             text="🎰 Открыть рулетку",
