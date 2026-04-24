@@ -1539,6 +1539,19 @@ async def handle_roulette(request):
         prize  = data.get("prize", "nothing")
         uid    = int(data.get("user_id", 0))
         uname  = data.get("username", "")
+
+        # Если user_id не пришёл — парсим из initData
+        if not uid:
+            import urllib.parse
+            init_data = data.get("init_data", "")
+            if init_data:
+                parsed = dict(urllib.parse.parse_qsl(init_data))
+                user_str = parsed.get("user", "{}")
+                import json as _j2
+                user_obj = _j2.loads(urllib.parse.unquote(user_str))
+                uid   = int(user_obj.get("id", 0))
+                uname = user_obj.get("username", uname)
+
         if not uid:
             return aiohttp_web.Response(text='{"ok":false,"reason":"no_uid"}', content_type="application/json")
         if prize in ("day1", "day3"):
@@ -1572,11 +1585,31 @@ async def handle_roulette(request):
     except Exception as e:
         return aiohttp_web.Response(text=f'{{"ok":false,"error":"{e}"}}', content_type="application/json", status=500)
 
+async def cors_middleware(app, handler):
+    async def middleware(request):
+        if request.method == "OPTIONS":
+            return aiohttp_web.Response(headers={
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Methods": "POST, GET, OPTIONS",
+                "Access-Control-Allow-Headers": "Content-Type",
+            })
+        response = await handler(request)
+        response.headers["Access-Control-Allow-Origin"] = "*"
+        response.headers["Access-Control-Allow-Methods"] = "POST, GET, OPTIONS"
+        response.headers["Access-Control-Allow-Headers"] = "Content-Type"
+        return response
+    return middleware
+
 async def start_web_server():
-    _app = aiohttp_web.Application()
+    _app = aiohttp_web.Application(middlewares=[cors_middleware])
     _app.router.add_get("/health",    handle_health)
     _app.router.add_get("/check_key", handle_check_key)
     _app.router.add_post("/roulette", handle_roulette)
+    _app.router.add_route("OPTIONS", "/roulette", lambda r: aiohttp_web.Response(headers={
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "POST, GET, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type",
+    }))
     _runner = aiohttp_web.AppRunner(_app)
     await _runner.setup()
     _site = aiohttp_web.TCPSite(_runner, "0.0.0.0", WEB_PORT)
