@@ -9,6 +9,8 @@ from datetime import datetime, timedelta
 from collections import defaultdict
 
 from aiogram import Bot, Dispatcher, F
+import os as _os
+from aiohttp import web as aiohttp_web
 from aiogram.types import (
     Message, CallbackQuery,
     InlineKeyboardMarkup, InlineKeyboardButton,
@@ -26,6 +28,7 @@ SUPPORT_BOT = "https://t.me/YrenerSupbot"
 PAYMENT_URL   = "https://funpay.com/lots/offer?id=67242489"
 ROULETTE_URL  = "https://yrenertrial.netlify.app"
 DB_PATH     = "yrener.db"
+WEB_PORT    = int(_os.environ.get("PORT", 8080))
 
 APK_FILE_ID: str | None = None
 
@@ -1498,6 +1501,88 @@ async def roulette_result(message: Message):
         await message.answer("Произошла ошибка. Попробуйте позже.",
                              reply_markup=main_keyboard(message.from_user.id))
 
+
+# ── API SERVER ────────────────────────────────────────────────────────────────
+import json as _json
+
+_API_SECRET = "Yrener2011"
+
+async def handle_health(request):
+    return aiohttp_web.Response(text='{"status":"ok"}', content_type="application/json")
+
+async def handle_check_key(request):
+    key    = request.rel_url.query.get("key", "")
+    secret = request.rel_url.query.get("secret", "")
+    if secret != _API_SECRET:
+        return aiohttp_web.Response(text='{"valid":false,"reason":"forbidden"}', content_type="application/json", status=403)
+    with get_conn() as conn:
+        row = conn.execute("SELECT * FROM users WHERE key=?", (key,)).fetchone()
+    if not row:
+        return aiohttp_web.Response(text='{"valid":false,"reason":"not_found"}', content_type="application/json")
+    expires = datetime.fromisoformat(row["expires"])
+    if datetime.now() > expires:
+        return aiohttp_web.Response(text='{"valid":false,"reason":"expired"}', content_type="application/json")
+    days_left = (expires - datetime.now()).days
+    return aiohttp_web.Response(
+        text=_json.dumps({"valid":True,"key":row["key"],"expires":row["expires"],"days_left":days_left,"username":row["username"] or "—","tg_id":str(row["user_id"])}),
+        content_type="application/json"
+    )
+
+def make_expiry(days: int):
+    return datetime.now() + timedelta(days=days)
+
+async def handle_roulette(request):
+    try:
+        data   = await request.json()
+        if data.get("secret") != _API_SECRET:
+            return aiohttp_web.Response(text='{"ok":false}', content_type="application/json", status=403)
+        prize  = data.get("prize", "nothing")
+        uid    = int(data.get("user_id", 0))
+        uname  = data.get("username", "")
+        if not uid:
+            return aiohttp_web.Response(text='{"ok":false,"reason":"no_uid"}', content_type="application/json")
+        if prize in ("day1", "day3"):
+            days    = 1 if prize == "day1" else 3
+            key     = make_unique_key()
+            expires = make_expiry(days)
+            # Сохраняем в keys — пользователь вводит ключ сам
+            db_key_add(key, expires, days, f"{days} days (roulette)", uname)
+            db_log("roulette_win", uid, uname, f"prize={prize} key={key}")
+            prize_name = "1 день" if days == 1 else "3 дня"
+            await bot.send_message(
+                uid,
+                f"🎉 Поздравляем! Вам выпала <b>подписка на {prize_name}</b>!\n\n"
+                f"🔑 Ваш ключ: <code>{key}</code>\n"
+                f"📅 Действует до: <b>{expires.strftime('%d.%m.%Y %H:%M')}</b>\n\n"
+                f"Введите ключ в боте нажав <b>🔑 Ввести ключ</b> — "
+                f"после этого откроется кнопка <b>📥 Получить файл</b>.",
+                parse_mode="HTML",
+                reply_markup=main_keyboard(uid)
+            )
+        else:
+            db_log("roulette_nothing", uid, uname)
+            await bot.send_message(
+                uid,
+                "😔 Сожалеем, вам выпало <b>Ничего</b>.\n"
+                "Возвращайтесь завтра — удача будет на вашей стороне!",
+                parse_mode="HTML",
+                reply_markup=main_keyboard(uid)
+            )
+        return aiohttp_web.Response(text='{"ok":true}', content_type="application/json")
+    except Exception as e:
+        return aiohttp_web.Response(text=f'{{"ok":false,"error":"{e}"}}', content_type="application/json", status=500)
+
+async def start_web_server():
+    _app = aiohttp_web.Application()
+    _app.router.add_get("/health",    handle_health)
+    _app.router.add_get("/check_key", handle_check_key)
+    _app.router.add_post("/roulette", handle_roulette)
+    _runner = aiohttp_web.AppRunner(_app)
+    await _runner.setup()
+    _site = aiohttp_web.TCPSite(_runner, "0.0.0.0", WEB_PORT)
+    await _site.start()
+    print(f"API запущен на порту {WEB_PORT}")
+
 # ── MAIN ──────────────────────────────────────────────────────────────────────
 async def main():
     logging.basicConfig(level=logging.INFO)
@@ -1515,6 +1600,7 @@ async def main():
         BotCommand(command="exit",   description="🔙 Вернуться в главное меню"),
     ])
     asyncio.create_task(subscription_checker())
+    await start_web_server()
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
