@@ -1384,95 +1384,90 @@ async def dice(message: Message):
 # ── ФОНОВАЯ ПРОВЕРКА ПОДПИСОК ─────────────────────────────────────────────────
 async def subscription_checker():
     while True:
-        now = datetime.now()
-        with get_conn() as conn:
-            all_users = conn.execute("SELECT * FROM users").fetchall()
+        try:
+            now = datetime.now()
+            with get_conn() as conn:
+                all_users = conn.execute("SELECT * FROM users").fetchall()
 
-        for row in all_users:
-            uid      = row["user_id"]
-            uname    = row["username"] or ""
-            key_used = row["key"] or ""
-            expires  = datetime.fromisoformat(row["expires"])
-            mins_left = (expires - now).total_seconds() / 60
+            for row in all_users:
+                uid      = row["user_id"]
+                uname    = row["username"] or ""
+                key_used = row["key"] or ""
+                expires  = datetime.fromisoformat(row["expires"])
+                mins_left = (expires - now).total_seconds() / 60
 
-            kb_buy = InlineKeyboardMarkup(inline_keyboard=[[
-                InlineKeyboardButton(text="💳 Купить ключ", url=PAYMENT_URL)
-            ]])
+                kb_buy = InlineKeyboardMarkup(inline_keyboard=[[
+                    InlineKeyboardButton(text="💳 Купить ключ", url=PAYMENT_URL)
+                ]])
 
-            # За 24 часа
-            if 60 * 23 < mins_left <= 60 * 25:
-                already = db_setting_get(f"warn24h_{uid}_{key_used}")
-                if not already:
-                    try:
-                        await bot.send_message(
-                            uid,
-                            f"⏰ <b>Напоминание:</b> до окончания подписки осталось <b>~24 часа</b>!\n\n"
-                            f"Купите новый ключ заранее, чтобы не потерять доступ.",
-                            reply_markup=kb_buy,
-                            parse_mode="HTML"
-                        )
-                        db_setting_set(f"warn24h_{uid}_{key_used}", "1")
-                        db_log("sub_warn_24h", uid, uname, f"key={key_used}")
-                    except Exception:
-                        pass
+                # За 24 часа (окно 2 минуты)
+                if 60 * 24 - 1 <= mins_left <= 60 * 24 + 1:
+                    already = db_setting_get(f"warn24h_{uid}_{key_used}")
+                    if not already:
+                        try:
+                            await bot.send_message(uid,
+                                f"⏰ <b>Напоминание:</b> до окончания подписки осталось <b>~24 часа</b>!\n\n"
+                                f"Купите новый ключ заранее, чтобы не потерять доступ.",
+                                reply_markup=kb_buy, parse_mode="HTML")
+                            db_setting_set(f"warn24h_{uid}_{key_used}", "1")
+                        except Exception: pass
 
-            # За 1 час
-            if 55 < mins_left <= 65:
-                already = db_setting_get(f"warn1h_{uid}_{key_used}")
-                if not already:
-                    try:
-                        await bot.send_message(
-                            uid,
-                            f"⚠️ До окончания подписки осталось <b>~1 час</b>!\n\n"
-                            f"После истечения доступ к APK и меню будет закрыт.\n"
-                            f"Успейте купить новый ключ.",
-                            reply_markup=kb_buy,
-                            parse_mode="HTML"
-                        )
-                        db_setting_set(f"warn1h_{uid}_{key_used}", "1")
-                        db_log("sub_warn_1h", uid, uname, f"key={key_used}")
-                    except Exception:
-                        pass
+                # За 1 час (окно 2 минуты)
+                if 59 <= mins_left <= 61:
+                    already = db_setting_get(f"warn1h_{uid}_{key_used}")
+                    if not already:
+                        try:
+                            await bot.send_message(uid,
+                                f"⚠️ До окончания подписки осталось <b>~1 час</b>!\n\n"
+                                f"После истечения доступ к APK и меню будет закрыт.\n"
+                                f"Успейте купить новый ключ.",
+                                reply_markup=kb_buy, parse_mode="HTML")
+                            db_setting_set(f"warn1h_{uid}_{key_used}", "1")
+                        except Exception: pass
 
-            # За 5 минут
-            if 4 < mins_left <= 6:
-                already = db_setting_get(f"warn5m_{uid}_{key_used}")
-                if not already:
-                    try:
-                        await bot.send_message(
-                            uid,
-                            f"🚨 До окончания подписки осталось <b>5 минут</b>!\n\n"
-                            f"Купите новый ключ прямо сейчас.",
-                            reply_markup=kb_buy,
-                            parse_mode="HTML"
-                        )
-                        db_setting_set(f"warn5m_{uid}_{key_used}", "1")
-                        db_log("sub_warn_5min", uid, uname, f"key={key_used}")
-                    except Exception:
-                        pass
+                # За 30 минут (окно 2 минуты)
+                if 29 <= mins_left <= 31:
+                    already = db_setting_get(f"warn30m_{uid}_{key_used}")
+                    if not already:
+                        try:
+                            await bot.send_message(uid,
+                                f"⚠️ До окончания подписки осталось <b>30 минут</b>!\n\n"
+                                f"Купите новый ключ чтобы не потерять доступ.",
+                                reply_markup=kb_buy, parse_mode="HTML")
+                            db_setting_set(f"warn30m_{uid}_{key_used}", "1")
+                        except Exception: pass
 
-            # Подписка истекла
-            if mins_left <= 0:
-                already = db_setting_get(f"expired_{uid}_{key_used}")
-                if not already:
-                    try:
-                        await bot.send_message(
-                            uid,
-                            f"❌ Ваша подписка закончилась!\n\n"
-                            f"Ключ <code>{key_used}</code> больше не активен.\n"
-                            f"Купите новый ключ чтобы продолжить.",
-                            reply_markup=kb_buy,
-                            parse_mode="HTML"
-                        )
-                        db_setting_set(f"expired_{uid}_{key_used}", "1")
-                        db_log("sub_expired_notified", uid, uname, f"key={key_used}")
-                    except Exception:
-                        pass
-                    # Удаляем — подписка отключена
-                    with get_conn() as conn:
-                        conn.execute("DELETE FROM users WHERE user_id=?", (uid,))
+                # За 5 минут (окно 2 минуты)
+                if 4 <= mins_left <= 6:
+                    already = db_setting_get(f"warn5m_{uid}_{key_used}")
+                    if not already:
+                        try:
+                            await bot.send_message(uid,
+                                f"🚨 До окончания подписки осталось <b>5 минут</b>!\n\n"
+                                f"Купите новый ключ прямо сейчас.",
+                                reply_markup=kb_buy, parse_mode="HTML")
+                            db_setting_set(f"warn5m_{uid}_{key_used}", "1")
+                        except Exception: pass
 
-        await asyncio.sleep(30)
+                # Подписка истекла
+                if mins_left <= 0:
+                    already = db_setting_get(f"expired_{uid}_{key_used}")
+                    if not already:
+                        try:
+                            await bot.send_message(uid,
+                                f"❌ Ваша подписка закончилась!\n\n"
+                                f"Ключ <code>{key_used}</code> больше не активен.\n"
+                                f"Купите новый ключ чтобы продолжить.",
+                                reply_markup=kb_buy, parse_mode="HTML")
+                            db_setting_set(f"expired_{uid}_{key_used}", "1")
+                        except Exception: pass
+                        with get_conn() as conn:
+                            conn.execute("DELETE FROM users WHERE user_id=?", (uid,))
+
+        except Exception as e:
+            print(f"[checker error] {e}")
+
+        await asyncio.sleep(60)  # Каждую минуту — точнее чем 30 сек и меньше нагрузки
 
 
 # ── ЕЖЕДНЕВНЫЙ ПОДАРОК ────────────────────────────────────────────────────────
@@ -1727,6 +1722,7 @@ async def main():
     apk = db_apk_get()
     if apk:
         APK_FILE_ID = apk["file_id"]
+    asyncio.create_task(subscription_checker())
     # Регистрация команд (появляются при вводе /)
     from aiogram.types import BotCommand
     await bot.set_my_commands([
@@ -1735,7 +1731,6 @@ async def main():
         BotCommand(command="enter",  description="🔑 Ввести ключ"),
         BotCommand(command="exit",   description="🔙 Вернуться в главное меню"),
     ])
-    asyncio.create_task(subscription_checker())
     await start_web_server()
     await dp.start_polling(bot)
 
