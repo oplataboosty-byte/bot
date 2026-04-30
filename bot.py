@@ -1399,21 +1399,55 @@ async def subscription_checker():
                 InlineKeyboardButton(text="💳 Купить ключ", url=PAYMENT_URL)
             ]])
 
-            # За ~1 минуту предупреждение
-            if 0 < mins_left <= 1.5:
-                already = db_setting_get(f"warn1m_{uid}_{key_used}")
+            # За 24 часа
+            if 60 * 23 < mins_left <= 60 * 25:
+                already = db_setting_get(f"warn24h_{uid}_{key_used}")
                 if not already:
                     try:
                         await bot.send_message(
                             uid,
-                            f"⚠️ У вас осталась <b>1 минута</b> до окончания подписки!\n\n"
-                            f"Хотите продолжить? Купите новый ключ прямо сейчас — "
-                            f"после истечения доступ к APK и меню будет закрыт.",
+                            f"⏰ <b>Напоминание:</b> до окончания подписки осталось <b>~24 часа</b>!\n\n"
+                            f"Купите новый ключ заранее, чтобы не потерять доступ.",
                             reply_markup=kb_buy,
                             parse_mode="HTML"
                         )
-                        db_setting_set(f"warn1m_{uid}_{key_used}", "1")
-                        db_log("sub_warn_1min", uid, uname, f"key={key_used}")
+                        db_setting_set(f"warn24h_{uid}_{key_used}", "1")
+                        db_log("sub_warn_24h", uid, uname, f"key={key_used}")
+                    except Exception:
+                        pass
+
+            # За 1 час
+            if 55 < mins_left <= 65:
+                already = db_setting_get(f"warn1h_{uid}_{key_used}")
+                if not already:
+                    try:
+                        await bot.send_message(
+                            uid,
+                            f"⚠️ До окончания подписки осталось <b>~1 час</b>!\n\n"
+                            f"После истечения доступ к APK и меню будет закрыт.\n"
+                            f"Успейте купить новый ключ.",
+                            reply_markup=kb_buy,
+                            parse_mode="HTML"
+                        )
+                        db_setting_set(f"warn1h_{uid}_{key_used}", "1")
+                        db_log("sub_warn_1h", uid, uname, f"key={key_used}")
+                    except Exception:
+                        pass
+
+            # За 5 минут
+            if 4 < mins_left <= 6:
+                already = db_setting_get(f"warn5m_{uid}_{key_used}")
+                if not already:
+                    try:
+                        await bot.send_message(
+                            uid,
+                            f"🚨 До окончания подписки осталось <b>5 минут</b>!\n\n"
+                            f"Купите новый ключ прямо сейчас.",
+                            reply_markup=kb_buy,
+                            parse_mode="HTML"
+                        )
+                        db_setting_set(f"warn5m_{uid}_{key_used}", "1")
+                        db_log("sub_warn_5min", uid, uname, f"key={key_used}")
                     except Exception:
                         pass
 
@@ -1445,6 +1479,25 @@ async def subscription_checker():
 @dp.message(F.text == "🎁 Ежедневный подарок")
 @spam_guard
 async def daily_gift(message: Message):
+    uid = message.from_user.id
+    today = datetime.now().strftime("%Y-%m-%d")
+    last_spin = db_setting_get(f"spin_{uid}")
+
+    # Проверяем — крутил ли сегодня
+    if last_spin == today:
+        # Считаем когда следующий сброс (следующая полночь)
+        tomorrow = (datetime.now() + timedelta(days=1)).replace(hour=0, minute=0, second=0)
+        hours_left = int((tomorrow - datetime.now()).total_seconds() // 3600)
+        mins_left  = int((tomorrow - datetime.now()).total_seconds() % 3600 // 60)
+        await message.answer(
+            f"⏳ <b>Вы уже крутили сегодня!</b>\n\n"
+            f"Следующая прокрутка через: <b>{hours_left} ч. {mins_left} мин.</b>\n"
+            f"Возвращайтесь завтра!",
+            parse_mode="HTML",
+            reply_markup=main_keyboard(uid)
+        )
+        return
+
     kb = InlineKeyboardMarkup(inline_keyboard=[[
         InlineKeyboardButton(
             text="🎰 Открыть рулетку",
@@ -1468,6 +1521,10 @@ async def roulette_result(message: Message):
         prize = data.get("prize", "nothing")
         uid   = message.from_user.id
         uname = message.from_user.username or ""
+        today = datetime.now().strftime("%Y-%m-%d")
+
+        # Записываем что сегодня уже крутил
+        db_setting_set(f"spin_{uid}", today)
 
         if prize == "nothing":
             await message.answer(
@@ -1483,8 +1540,8 @@ async def roulette_result(message: Message):
         key  = make_unique_key()
         expires = datetime.now() + timedelta(days=days)
 
-        # Сразу активируем подписку
-        db_user_set(uid, expires, key, uname)
+        # Добавляем ключ в БД (пользователь вводит сам через бота)
+        db_key_add(key, expires, days, f"{days} days (roulette)", uname)
         db_log("roulette_win", uid, uname, f"prize={prize} key={key} days={days}")
 
         prize_name = "1 день" if days == 1 else "3 дня"
@@ -1492,13 +1549,13 @@ async def roulette_result(message: Message):
             f"🎉 Поздравляем! Вам выпала <b>подписка на {prize_name}</b>!\n\n"
             f"🔑 Ваш ключ: <code>{key}</code>\n"
             f"📅 Действует до: <b>{expires.strftime('%d.%m.%Y %H:%M')}</b>\n\n"
-            f"Подписка активирована автоматически.\n"
-            f"Нажмите <b>📥 Получить файл</b> чтобы скачать APK.",
+            f"Введите ключ нажав <b>🔑 Ввести ключ</b> — "
+            f"после этого откроется кнопка <b>📥 Получить файл</b>.",
             parse_mode="HTML",
             reply_markup=main_keyboard(uid)
         )
     except Exception as e:
-        await message.answer("Произошла ошибка. Попробуйте позже.",
+        await message.answer(f"Произошла ошибка: {e}",
                              reply_markup=main_keyboard(message.from_user.id))
 
 
@@ -1539,6 +1596,7 @@ async def handle_roulette(request):
         prize  = data.get("prize", "nothing")
         uid    = int(data.get("user_id", 0))
         uname  = data.get("username", "")
+        today  = datetime.now().strftime("%Y-%m-%d")
 
         # Если user_id не пришёл — парсим из initData
         if not uid:
@@ -1554,33 +1612,54 @@ async def handle_roulette(request):
 
         if not uid:
             return aiohttp_web.Response(text='{"ok":false,"reason":"no_uid"}', content_type="application/json")
-        if prize in ("day1", "day3"):
-            days    = 1 if prize == "day1" else 3
-            key     = make_unique_key()
-            expires = make_expiry(days)
-            # Сохраняем в keys — пользователь вводит ключ сам
-            db_key_add(key, expires, days, f"{days} days (roulette)", uname)
-            db_log("roulette_win", uid, uname, f"prize={prize} key={key}")
-            prize_name = "1 день" if days == 1 else "3 дня"
-            await bot.send_message(
-                uid,
-                f"🎉 Поздравляем! Вам выпала <b>подписка на {prize_name}</b>!\n\n"
-                f"🔑 Ваш ключ: <code>{key}</code>\n"
-                f"📅 Действует до: <b>{expires.strftime('%d.%m.%Y %H:%M')}</b>\n\n"
-                f"Введите ключ в боте нажав <b>🔑 Ввести ключ</b> — "
-                f"после этого откроется кнопка <b>📥 Получить файл</b>.",
-                parse_mode="HTML",
-                reply_markup=main_keyboard(uid)
+
+        # Проверка: уже крутил сегодня? (серверная защита)
+        last_spin = db_setting_get(f"spin_{uid}")
+        if last_spin == today:
+            tomorrow = (datetime.now() + timedelta(days=1)).replace(hour=0, minute=0, second=0)
+            secs = int((tomorrow - datetime.now()).total_seconds())
+            return aiohttp_web.Response(
+                text=_json.dumps({"ok": False, "reason": "already_spun", "retry_in_seconds": secs}),
+                content_type="application/json"
             )
+
+        # Записываем что сегодня крутил
+        db_setting_set(f"spin_{uid}", today)
+
+        if prize in ("day1", "day3"):
+            hours   = 24 if prize == "day1" else 72
+            expires = datetime.now() + timedelta(hours=hours)
+            days_label = 1 if prize == "day1" else 3
+            key = make_unique_key()
+            db_key_add(key, expires, days_label, f"{hours}h (roulette)", uname)
+            db_log("roulette_win", uid, uname, f"prize={prize} key={key} hours={hours}")
+            prize_name = "1 день (24 часа)" if prize == "day1" else "3 дня (72 часа)"
+            try:
+                await bot.send_message(
+                    uid,
+                    f"🎉 Поздравляем! Вам выпала <b>подписка на {prize_name}</b>!\n\n"
+                    f"🔑 Ваш ключ: <code>{key}</code>\n"
+                    f"📅 Действует до: <b>{expires.strftime('%d.%m.%Y %H:%M')}</b>\n\n"
+                    f"Введите ключ нажав <b>🔑 Ввести ключ</b> — "
+                    f"после этого откроется кнопка <b>📥 Получить файл</b>.",
+                    parse_mode="HTML",
+                    reply_markup=main_keyboard(uid)
+                )
+            except Exception as e:
+                db_log("roulette_send_error", uid, uname, str(e))
         else:
             db_log("roulette_nothing", uid, uname)
-            await bot.send_message(
-                uid,
-                "😔 Сожалеем, вам выпало <b>Ничего</b>.\n"
-                "Возвращайтесь завтра — удача будет на вашей стороне!",
-                parse_mode="HTML",
-                reply_markup=main_keyboard(uid)
-            )
+            try:
+                await bot.send_message(
+                    uid,
+                    "😔 Сожалеем, вам выпало <b>Ничего</b>.\n"
+                    "Возвращайтесь завтра — удача будет на вашей стороне!",
+                    parse_mode="HTML",
+                    reply_markup=main_keyboard(uid)
+                )
+            except Exception:
+                pass
+
         return aiohttp_web.Response(text='{"ok":true}', content_type="application/json")
     except Exception as e:
         return aiohttp_web.Response(text=f'{{"ok":false,"error":"{e}"}}', content_type="application/json", status=500)
