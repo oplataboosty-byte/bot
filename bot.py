@@ -27,7 +27,8 @@ OWNER_ID    = 8533402137
 SUPPORT_BOT = "https://t.me/YrenerSupbot"
 PAYMENT_URL   = "https://funpay.com/lots/offer?id=67242489"
 ROULETTE_URL  = "https://yrenertrial.netlify.app"
-DB_PATH     = "yrener.db"
+DB_PATH     = "/data/yrener.db"
+import os; os.makedirs("/data", exist_ok=True)
 WEB_PORT    = int(_os.environ.get("PORT", 8080))
 
 APK_FILE_ID: str | None = None
