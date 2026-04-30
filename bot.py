@@ -1572,16 +1572,40 @@ async def handle_check_key(request):
     secret = request.rel_url.query.get("secret", "")
     if secret != _API_SECRET:
         return aiohttp_web.Response(text='{"valid":false,"reason":"forbidden"}', content_type="application/json", status=403)
+
+    # Сначала ищем в активных пользователях (уже активированный ключ)
     with get_conn() as conn:
         row = conn.execute("SELECT * FROM users WHERE key=?", (key,)).fetchone()
-    if not row:
+    if row:
+        expires = datetime.fromisoformat(row["expires"])
+        if datetime.now() > expires:
+            return aiohttp_web.Response(text='{"valid":false,"reason":"expired"}', content_type="application/json")
+        days_left = (expires - datetime.now()).days
+        return aiohttp_web.Response(
+            text=_json.dumps({"valid": True, "key": row["key"], "expires": row["expires"],
+                              "days_left": days_left, "username": row["username"] or "—",
+                              "tg_id": str(row["user_id"])}),
+            content_type="application/json"
+        )
+
+    # Ищем в keys (ещё не активированный ключ)
+    with get_conn() as conn:
+        krow = conn.execute("SELECT * FROM keys WHERE key=?", (key,)).fetchone()
+    if not krow:
         return aiohttp_web.Response(text='{"valid":false,"reason":"not_found"}', content_type="application/json")
-    expires = datetime.fromisoformat(row["expires"])
+
+    expires = datetime.fromisoformat(krow["expires"])
     if datetime.now() > expires:
         return aiohttp_web.Response(text='{"valid":false,"reason":"expired"}', content_type="application/json")
+
+    # Активируем ключ — переносим в users
+    username = krow["username"] or ""
+    db_user_set(0, expires, key, username)
+    db_key_delete(key)
     days_left = (expires - datetime.now()).days
     return aiohttp_web.Response(
-        text=_json.dumps({"valid":True,"key":row["key"],"expires":row["expires"],"days_left":days_left,"username":row["username"] or "—","tg_id":str(row["user_id"])}),
+        text=_json.dumps({"valid": True, "key": key, "expires": krow["expires"],
+                          "days_left": days_left, "username": username, "tg_id": "0"}),
         content_type="application/json"
     )
 
