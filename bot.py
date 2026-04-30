@@ -2,7 +2,9 @@ import asyncio
 import logging
 import random
 import string
-import sqlite3
+import psycopg2
+import psycopg2.extras
+import os
 import functools
 import re
 from datetime import datetime, timedelta
@@ -27,8 +29,7 @@ OWNER_ID    = 8533402137
 SUPPORT_BOT = "https://t.me/YrenerSupbot"
 PAYMENT_URL   = "https://funpay.com/lots/offer?id=67242489"
 ROULETTE_URL  = "https://yrenertrial.netlify.app"
-DB_PATH     = "/data/yrener.db"
-import os; os.makedirs("/data", exist_ok=True)
+DATABASE_URL = os.environ.get("DATABASE_URL", "")
 WEB_PORT    = int(_os.environ.get("PORT", 8080))
 
 APK_FILE_ID: str | None = None
@@ -87,85 +88,81 @@ def parse_human_date(text: str):
 
 # ── DATABASE ──────────────────────────────────────────────────────────────────
 def get_conn():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
+    conn = psycopg2.connect(DATABASE_URL, cursor_factory=psycopg2.extras.RealDictCursor)
     return conn
 
 def init_db():
     with get_conn() as conn:
-        conn.executescript("""
-            CREATE TABLE IF NOT EXISTS keys (
-                key      TEXT PRIMARY KEY,
-                expires  TEXT NOT NULL,
-                days     INTEGER NOT NULL,
-                label    TEXT NOT NULL DEFAULT '',
-                username TEXT NOT NULL DEFAULT ''
-            );
-            CREATE TABLE IF NOT EXISTS users (
-                user_id  INTEGER PRIMARY KEY,
-                expires  TEXT NOT NULL,
-                key      TEXT NOT NULL DEFAULT '',
-                username TEXT NOT NULL DEFAULT ''
-            );
-            CREATE TABLE IF NOT EXISTS settings (
-                name  TEXT PRIMARY KEY,
-                value TEXT
-            );
-            CREATE TABLE IF NOT EXISTS logs (
-                id         INTEGER PRIMARY KEY AUTOINCREMENT,
-                ts         TEXT NOT NULL,
-                event      TEXT NOT NULL,
-                user_id    INTEGER,
-                username   TEXT,
-                details    TEXT
-            );
-            CREATE TABLE IF NOT EXISTS apk_info (
-                id        INTEGER PRIMARY KEY CHECK (id = 1),
-                file_id   TEXT NOT NULL,
-                filename  TEXT NOT NULL,
-                size_mb   REAL NOT NULL,
-                uploaded  TEXT NOT NULL
-            );
-        """)
-        # миграция: добавить username в keys если нет
-        cols = [r[1] for r in conn.execute("PRAGMA table_info(keys)").fetchall()]
-        if "username" not in cols:
-            conn.execute("ALTER TABLE keys ADD COLUMN username TEXT NOT NULL DEFAULT ''")
-        cols2 = [r[1] for r in conn.execute("PRAGMA table_info(users)").fetchall()]
-        if "username" not in cols2:
-            conn.execute("ALTER TABLE users ADD COLUMN username TEXT NOT NULL DEFAULT ''")
+        with conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS keys (
+                    key      TEXT PRIMARY KEY,
+                    expires  TEXT NOT NULL,
+                    days     INTEGER NOT NULL,
+                    label    TEXT NOT NULL DEFAULT '',
+                    username TEXT NOT NULL DEFAULT ''
+                );
+                CREATE TABLE IF NOT EXISTS users (
+                    user_id  BIGINT PRIMARY KEY,
+                    expires  TEXT NOT NULL,
+                    key      TEXT NOT NULL DEFAULT '',
+                    username TEXT NOT NULL DEFAULT ''
+                );
+                CREATE TABLE IF NOT EXISTS settings (
+                    name  TEXT PRIMARY KEY,
+                    value TEXT
+                );
+                CREATE TABLE IF NOT EXISTS logs (
+                    id         SERIAL PRIMARY KEY,
+                    ts         TEXT NOT NULL,
+                    event      TEXT NOT NULL,
+                    user_id    BIGINT,
+                    username   TEXT,
+                    details    TEXT
+                );
+                CREATE TABLE IF NOT EXISTS apk_info (
+                    id        INTEGER PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+                    file_id   TEXT NOT NULL,
+                    filename  TEXT NOT NULL,
+                    size_mb   REAL NOT NULL,
+                    uploaded  TEXT NOT NULL
+                );
+            """)
+        conn.commit()
+
 
 # ── LOGS ──────────────────────────────────────────────────────────────────────
 def db_log(event: str, user_id: int = None, username: str = None, details: str = None):
     ts = datetime.now().isoformat(sep=" ", timespec="seconds")
     with get_conn() as conn:
-        conn.execute(
-            "INSERT INTO logs(ts,event,user_id,username,details) VALUES(?,?,?,?,?)",
-            (ts, event, user_id, username, details)
-        )
+        with conn.cursor() as cur:
+            cur.execute("INSERT INTO logs(ts,event,user_id,username,details) VALUES(%s,%s,%s,%s,%s)", (ts, event, user_id, username, details))
+        conn.commit()
 
 def db_logs_get(limit=50):
     with get_conn() as conn:
-        if limit:
-            rows = conn.execute(
-                "SELECT * FROM logs ORDER BY id DESC LIMIT ?", (limit,)
-            ).fetchall()
-        else:
-            rows = conn.execute(
-                "SELECT * FROM logs ORDER BY id DESC"
-            ).fetchall()
+        with conn.cursor() as cur:
+            if limit:
+                cur.execute("SELECT * FROM logs ORDER BY id DESC LIMIT %s", (limit,))
+            else:
+                cur.execute("SELECT * FROM logs ORDER BY id DESC")
+            rows = cur.fetchall()
     return [dict(r) for r in rows]
 
 def db_logs_all_json():
     """Все логи для HTML-страницы"""
     with get_conn() as conn:
-        rows = conn.execute("SELECT * FROM logs ORDER BY id DESC").fetchall()
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM logs ORDER BY id DESC")
+            rows = cur.fetchall()
     return [dict(r) for r in rows]
 
 # ── KEYS ──────────────────────────────────────────────────────────────────────
 def db_key_get(key):
     with get_conn() as conn:
-        row = conn.execute("SELECT * FROM keys WHERE key=?", (key,)).fetchone()
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM keys WHERE key=%s", (key,))
+            row = cur.fetchone()
     if not row:
         return None
     return {"key": row["key"], "expires": datetime.fromisoformat(row["expires"]),
@@ -173,37 +170,49 @@ def db_key_get(key):
 
 def db_key_exists(key):
     with get_conn() as conn:
-        return conn.execute("SELECT 1 FROM keys WHERE key=?", (key,)).fetchone() is not None
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1 FROM keys WHERE key=%s", (key,))
+            return cur.fetchone() is not None
 
 def db_key_add(key, expires, days, label, username):
     with get_conn() as conn:
-        conn.execute("INSERT INTO keys(key,expires,days,label,username) VALUES(?,?,?,?,?)",
-                     (key, expires.isoformat(), days, label, username))
+        with conn.cursor() as cur:
+            cur.execute("INSERT INTO keys(key,expires,days,label,username) VALUES(%s,%s,%s,%s,%s) ON CONFLICT(key) DO NOTHING", (key, expires.isoformat(), days, label, username))
+        conn.commit()
 
 def db_key_delete(key):
     with get_conn() as conn:
-        conn.execute("DELETE FROM keys WHERE key=?", (key,))
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM keys WHERE key=%s", (key,))
+        conn.commit()
 
 def db_key_update_expires(key, new_expires):
     new_days = (new_expires - datetime.now()).days + 1
     with get_conn() as conn:
-        conn.execute("UPDATE keys SET expires=?, days=? WHERE key=?",
-                     (new_expires.isoformat(), new_days, key))
+        with conn.cursor() as cur:
+            cur.execute("UPDATE keys SET expires=%s, days=%s WHERE key=%s", (new_expires.isoformat(), new_days, key))
+        conn.commit()
 
 def db_keys_all():
     with get_conn() as conn:
-        rows = conn.execute("SELECT * FROM keys ORDER BY expires").fetchall()
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM keys ORDER BY expires")
+            rows = cur.fetchall()
     return [{"key": r["key"], "expires": datetime.fromisoformat(r["expires"]),
              "days": r["days"], "label": r["label"], "username": r["username"]} for r in rows]
 
 def db_keys_count():
     with get_conn() as conn:
-        return conn.execute("SELECT COUNT(*) FROM keys").fetchone()[0]
+        with conn.cursor() as cur:
+            cur.execute("SELECT COUNT(*) FROM keys")
+            return cur.fetchone()["count"]
 
 # ── USERS ─────────────────────────────────────────────────────────────────────
 def db_user_get(user_id):
     with get_conn() as conn:
-        row = conn.execute("SELECT * FROM users WHERE user_id=?", (user_id,)).fetchone()
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM users WHERE user_id=%s", (user_id,))
+            row = cur.fetchone()
     if not row:
         return None
     return {"user_id": row["user_id"], "expires": datetime.fromisoformat(row["expires"]),
@@ -211,29 +220,36 @@ def db_user_get(user_id):
 
 def db_user_set(user_id, expires, key, username):
     with get_conn() as conn:
-        conn.execute("INSERT OR REPLACE INTO users(user_id,expires,key,username) VALUES(?,?,?,?)",
-                     (user_id, expires.isoformat(), key, username))
+        with conn.cursor() as cur:
+            cur.execute("INSERT INTO users(user_id,expires,key,username) VALUES(%s,%s,%s,%s) ON CONFLICT(user_id) DO UPDATE SET expires=EXCLUDED.expires, key=EXCLUDED.key, username=EXCLUDED.username", (user_id, expires.isoformat(), key, username))
+        conn.commit()
 
 def db_users_all_ids():
     with get_conn() as conn:
-        rows = conn.execute("SELECT user_id FROM users").fetchall()
+        with conn.cursor() as cur:
+            cur.execute("SELECT user_id FROM users")
+            rows = cur.fetchall()
     return [r["user_id"] for r in rows]
 
 def db_users_active_count():
     with get_conn() as conn:
-        return conn.execute("SELECT COUNT(*) FROM users WHERE expires > ?",
-                            (datetime.now().isoformat(),)).fetchone()[0]
+        with conn.cursor() as cur:
+            cur.execute("SELECT COUNT(*) FROM users WHERE expires > %s", (datetime.now().isoformat(),))
+            return cur.fetchone()["count"]
 
 def db_users_expired():
     with get_conn() as conn:
-        rows = conn.execute("SELECT * FROM users WHERE expires <= ?",
-                            (datetime.now().isoformat(),)).fetchall()
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM users WHERE expires <= %s", (datetime.now().isoformat(),))
+            rows = cur.fetchall()
     return [{"user_id": r["user_id"], "expires": datetime.fromisoformat(r["expires"]),
              "key": r["key"], "username": r["username"]} for r in rows]
 
 def db_user_find_by_key(key):
     with get_conn() as conn:
-        row = conn.execute("SELECT * FROM users WHERE key=?", (key,)).fetchone()
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM users WHERE key=%s", (key,))
+            row = cur.fetchone()
     if not row:
         return None
     return {"user_id": row["user_id"], "expires": datetime.fromisoformat(row["expires"]),
@@ -242,25 +258,33 @@ def db_user_find_by_key(key):
 # ── SETTINGS ──────────────────────────────────────────────────────────────────
 def db_setting_get(name):
     with get_conn() as conn:
-        row = conn.execute("SELECT value FROM settings WHERE name=?", (name,)).fetchone()
+        with conn.cursor() as cur:
+            cur.execute("SELECT value FROM settings WHERE name=%s", (name,))
+            row = cur.fetchone()
     return row["value"] if row else None
 
 def db_setting_set(name, value):
     with get_conn() as conn:
-        conn.execute("INSERT OR REPLACE INTO settings(name,value) VALUES(?,?)", (name, value))
+        with conn.cursor() as cur:
+            cur.execute("INSERT INTO settings(name,value) VALUES(%s,%s) ON CONFLICT(name) DO UPDATE SET value=EXCLUDED.value", (name, value))
+        conn.commit()
 
 # ── APK INFO ──────────────────────────────────────────────────────────────────
 def db_apk_save(file_id, filename, size_mb):
     uploaded = datetime.now().isoformat(sep=" ", timespec="seconds")
     with get_conn() as conn:
-        conn.execute(
-            "INSERT OR REPLACE INTO apk_info(id,file_id,filename,size_mb,uploaded) VALUES(1,?,?,?,?)",
-            (file_id, filename, size_mb, uploaded)
-        )
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO apk_info(id,file_id,filename,size_mb,uploaded) VALUES(1,%s,%s,%s,%s) ON CONFLICT(id) DO UPDATE SET file_id=EXCLUDED.file_id, filename=EXCLUDED.filename, size_mb=EXCLUDED.size_mb, uploaded=EXCLUDED.uploaded",
+                (file_id, filename, size_mb, uploaded)
+            )
+        conn.commit()
 
 def db_apk_get():
     with get_conn() as conn:
-        row = conn.execute("SELECT * FROM apk_info WHERE id=1").fetchone()
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM apk_info WHERE id=1")
+            row = cur.fetchone()
     if not row:
         return None
     return {"file_id": row["file_id"], "filename": row["filename"],
@@ -268,7 +292,9 @@ def db_apk_get():
 
 def db_apk_delete():
     with get_conn() as conn:
-        conn.execute("DELETE FROM apk_info WHERE id=1")
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM apk_info WHERE id=1")
+        conn.commit()
 
 # ── SPAM ──────────────────────────────────────────────────────────────────────
 spam_tracker = defaultdict(
@@ -748,10 +774,9 @@ async def admin_list_keys(call: CallbackQuery):
 
     # Активные пользователи с ключами
     with get_conn() as conn:
-        rows = conn.execute(
-            "SELECT * FROM users WHERE expires > ? ORDER BY expires DESC",
-            (datetime.now().isoformat(),)
-        ).fetchall()
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM users WHERE expires > %s ORDER BY expires DESC", (datetime.now().isoformat(),))
+            rows = cur.fetchall()
     if rows:
         active_lines = ["\n<b>✅ Активные пользователи:</b>"]
         for r in rows:
@@ -1388,7 +1413,9 @@ async def subscription_checker():
         try:
             now = datetime.now()
             with get_conn() as conn:
-                all_users = conn.execute("SELECT * FROM users").fetchall()
+                with conn.cursor() as cur2:
+                cur2.execute("SELECT * FROM users")
+                all_users = cur2.fetchall()
 
             for row in all_users:
                 uid      = row["user_id"]
@@ -1463,7 +1490,9 @@ async def subscription_checker():
                             db_setting_set(f"expired_{uid}_{key_used}", "1")
                         except Exception: pass
                         with get_conn() as conn:
-                            conn.execute("DELETE FROM users WHERE user_id=?", (uid,))
+                            with conn.cursor() as cur:
+                            cur.execute("DELETE FROM users WHERE user_id=%s", (uid,))
+                        conn.commit()
 
         except Exception as e:
             print(f"[checker error] {e}")
@@ -1571,7 +1600,9 @@ async def handle_check_key(request):
 
     # Сначала ищем в активных пользователях (уже активированный ключ)
     with get_conn() as conn:
-        row = conn.execute("SELECT * FROM users WHERE key=?", (key,)).fetchone()
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM users WHERE key=%s", (key,))
+            row = cur.fetchone()
     if row:
         expires = datetime.fromisoformat(row["expires"])
         if datetime.now() > expires:
@@ -1586,7 +1617,9 @@ async def handle_check_key(request):
 
     # Ищем в keys (ещё не активированный ключ)
     with get_conn() as conn:
-        krow = conn.execute("SELECT * FROM keys WHERE key=?", (key,)).fetchone()
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM keys WHERE key=%s", (key,))
+            krow = cur.fetchone()
     if not krow:
         return aiohttp_web.Response(text='{"valid":false,"reason":"not_found"}', content_type="application/json")
 
