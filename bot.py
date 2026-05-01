@@ -30,6 +30,8 @@ SUPPORT_BOT = "https://t.me/YrenerSupbot"
 PAYMENT_URL   = "https://funpay.com/lots/offer?id=67242489"
 ROULETTE_URL  = "https://yrenertrial.netlify.app"
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
+if not DATABASE_URL:
+    raise RuntimeError("DATABASE_URL не задан! Добавьте переменную в Railway.")
 WEB_PORT    = int(_os.environ.get("PORT", 8080))
 
 APK_FILE_ID: str | None = None
