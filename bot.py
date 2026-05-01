@@ -1414,8 +1414,8 @@ async def subscription_checker():
             now = datetime.now()
             with get_conn() as conn:
                 with conn.cursor() as cur2:
-                cur2.execute("SELECT * FROM users")
-                all_users = cur2.fetchall()
+                    cur2.execute("SELECT * FROM users")
+                    all_users = cur2.fetchall()
 
             for row in all_users:
                 uid      = row["user_id"]
@@ -1491,8 +1491,8 @@ async def subscription_checker():
                         except Exception: pass
                         with get_conn() as conn:
                             with conn.cursor() as cur:
-                            cur.execute("DELETE FROM users WHERE user_id=%s", (uid,))
-                        conn.commit()
+                                cur.execute("DELETE FROM users WHERE user_id=%s", (uid,))
+                            conn.commit()
 
         except Exception as e:
             print(f"[checker error] {e}")
