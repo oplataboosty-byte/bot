@@ -1,3 +1,4 @@
-psycopg2-binary
 aiogram==3.7.0
-aiohttp
+aiohttp==3.9.5
+psycopg2-binary==2.9.9
+pydantic==2.6.4
