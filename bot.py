@@ -2,8 +2,7 @@ import asyncio
 import logging
 import random
 import string
-import psycopg2
-import psycopg2.extras
+import asyncpg
 import os
 import functools
 import re
@@ -87,9 +86,13 @@ def parse_human_date(text: str):
     return None
 
 # ── DATABASE ──────────────────────────────────────────────────────────────────
-def get_conn():
-    conn = psycopg2.connect(DATABASE_URL, cursor_factory=psycopg2.extras.RealDictCursor)
-    return conn
+_pool = None
+
+async def get_pool():
+    global _pool
+    if _pool is None:
+        _pool = await asyncpg.create_pool(DATABASE_URL)
+    return _pool
 
 def init_db():
     with get_conn() as conn:
