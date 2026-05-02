@@ -2,8 +2,7 @@ import asyncio
 import logging
 import random
 import string
-import psycopg2
-import psycopg2.extras
+import sqlite3
 import os
 import functools
 import re
@@ -30,16 +29,7 @@ SUPPORT_BOT = "https://t.me/YrenerSupbot"
 PAYMENT_URL   = "https://funpay.com/lots/offer?id=67242489"
 ROULETTE_URL  = "https://yrenertrial.netlify.app"
 # Пробуем публичный URL если задан, иначе внутренний
-DATABASE_URL = (
-    os.environ.get("DATABASE_PUBLIC_URL") or
-    os.environ.get("DATABASE_URL") or
-    ""
-)
-if not DATABASE_URL:
-    raise RuntimeError("DATABASE_URL не задан! Добавьте переменную в Railway.")
-# Добавляем SSL для публичного подключения
-if "rlwy.net" in DATABASE_URL and "sslmode" not in DATABASE_URL:
-    DATABASE_URL += "?sslmode=require"
+DB_PATH = "yrener.db"
 WEB_PORT    = int(_os.environ.get("PORT", 8080))
 
 APK_FILE_ID: str | None = None
@@ -98,13 +88,13 @@ def parse_human_date(text: str):
 
 # ── DATABASE ──────────────────────────────────────────────────────────────────
 def get_conn():
-    conn = psycopg2.connect(DATABASE_URL, cursor_factory=psycopg2.extras.RealDictCursor)
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
     return conn
 
 def init_db():
     with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
+                    conn.executescript("""
                 CREATE TABLE IF NOT EXISTS keys (
                     key      TEXT PRIMARY KEY,
                     expires  TEXT NOT NULL,
@@ -138,41 +128,33 @@ def init_db():
                     uploaded  TEXT NOT NULL
                 );
             """)
-        conn.commit()
 
 
 # ── LOGS ──────────────────────────────────────────────────────────────────────
 def db_log(event: str, user_id: int = None, username: str = None, details: str = None):
     ts = datetime.now().isoformat(sep=" ", timespec="seconds")
     with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute("INSERT INTO logs(ts,event,user_id,username,details) VALUES(%s,%s,%s,%s,%s)", (ts, event, user_id, username, details))
+        conn.execute("INSERT INTO logs(ts,event,user_id,username,details) VALUES(?,?,?,?,?)", (ts, event, user_id, username, details))
         conn.commit()
 
 def db_logs_get(limit=50):
     with get_conn() as conn:
-        with conn.cursor() as cur:
-            if limit:
-                cur.execute("SELECT * FROM logs ORDER BY id DESC LIMIT %s", (limit,))
-            else:
-                cur.execute("SELECT * FROM logs ORDER BY id DESC")
-            rows = cur.fetchall()
+        if limit:
+            rows = conn.execute("SELECT * FROM logs ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
+        else:
+            rows = conn.execute("SELECT * FROM logs ORDER BY id DESC").fetchall()
     return [dict(r) for r in rows]
 
 def db_logs_all_json():
     """Все логи для HTML-страницы"""
     with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT * FROM logs ORDER BY id DESC")
-            rows = cur.fetchall()
+                    rows = list(conn.execute("SELECT * FROM logs ORDER BY id DESC").fetchall())
     return [dict(r) for r in rows]
 
 # ── KEYS ──────────────────────────────────────────────────────────────────────
 def db_key_get(key):
     with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT * FROM keys WHERE key=%s", (key,))
-            row = cur.fetchone()
+        row = conn.execute("SELECT * FROM keys WHERE key=?", (key,)).fetchone()
     if not row:
         return None
     return {"key": row["key"], "expires": datetime.fromisoformat(row["expires"]),
@@ -180,49 +162,38 @@ def db_key_get(key):
 
 def db_key_exists(key):
     with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT 1 FROM keys WHERE key=%s", (key,))
-            return cur.fetchone() is not None
+        return conn.execute("SELECT 1 FROM keys WHERE key=?", (key,)).fetchone() is not None
 
 def db_key_add(key, expires, days, label, username):
     with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute("INSERT INTO keys(key,expires,days,label,username) VALUES(%s,%s,%s,%s,%s) ON CONFLICT(key) DO NOTHING", (key, expires.isoformat(), days, label, username))
+        conn.execute("INSERT OR IGNORE INTO keys(key,expires,days,label,username) VALUES(?,?,?,?,?)", (key, expires.isoformat(), days, label, username))
         conn.commit()
 
 def db_key_delete(key):
     with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute("DELETE FROM keys WHERE key=%s", (key,))
+        conn.execute("DELETE FROM keys WHERE key=?", (key,))
         conn.commit()
 
 def db_key_update_expires(key, new_expires):
     new_days = (new_expires - datetime.now()).days + 1
     with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute("UPDATE keys SET expires=%s, days=%s WHERE key=%s", (new_expires.isoformat(), new_days, key))
+        conn.execute("UPDATE keys SET expires=?, days=? WHERE key=?", (new_expires.isoformat(), new_days, key))
         conn.commit()
 
 def db_keys_all():
     with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT * FROM keys ORDER BY expires")
-            rows = cur.fetchall()
+                    rows = list(conn.execute("SELECT * FROM keys ORDER BY expires").fetchall())
     return [{"key": r["key"], "expires": datetime.fromisoformat(r["expires"]),
              "days": r["days"], "label": r["label"], "username": r["username"]} for r in rows]
 
 def db_keys_count():
     with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT COUNT(*) FROM keys")
-            return cur.fetchone()["count"]
+        return conn.execute("SELECT COUNT(*) FROM keys").fetchone()[0]
 
 # ── USERS ─────────────────────────────────────────────────────────────────────
 def db_user_get(user_id):
     with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT * FROM users WHERE user_id=%s", (user_id,))
-            row = cur.fetchone()
+        row = conn.execute("SELECT * FROM users WHERE user_id=?", (user_id,)).fetchone()
     if not row:
         return None
     return {"user_id": row["user_id"], "expires": datetime.fromisoformat(row["expires"]),
@@ -230,36 +201,27 @@ def db_user_get(user_id):
 
 def db_user_set(user_id, expires, key, username):
     with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute("INSERT INTO users(user_id,expires,key,username) VALUES(%s,%s,%s,%s) ON CONFLICT(user_id) DO UPDATE SET expires=EXCLUDED.expires, key=EXCLUDED.key, username=EXCLUDED.username", (user_id, expires.isoformat(), key, username))
+        conn.execute("INSERT OR REPLACE INTO users(user_id,expires,key,username) VALUES(?,?,?,?)", (user_id, expires.isoformat(), key, username))
         conn.commit()
 
 def db_users_all_ids():
     with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT user_id FROM users")
-            rows = cur.fetchall()
+                    rows = list(conn.execute("SELECT user_id FROM users").fetchall())
     return [r["user_id"] for r in rows]
 
 def db_users_active_count():
     with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT COUNT(*) FROM users WHERE expires > %s", (datetime.now().isoformat(),))
-            return cur.fetchone()["count"]
+        return conn.execute("SELECT COUNT(*) FROM users WHERE expires > ?", (datetime.now().isoformat(),)).fetchone()[0]
 
 def db_users_expired():
     with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT * FROM users WHERE expires <= %s", (datetime.now().isoformat(),))
-            rows = cur.fetchall()
+        rows = conn.execute("SELECT * FROM users WHERE expires <= ?", (datetime.now().isoformat(),)).fetchall()
     return [{"user_id": r["user_id"], "expires": datetime.fromisoformat(r["expires"]),
              "key": r["key"], "username": r["username"]} for r in rows]
 
 def db_user_find_by_key(key):
     with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT * FROM users WHERE key=%s", (key,))
-            row = cur.fetchone()
+        row = conn.execute("SELECT * FROM users WHERE key=?", (key,)).fetchone()
     if not row:
         return None
     return {"user_id": row["user_id"], "expires": datetime.fromisoformat(row["expires"]),
@@ -268,33 +230,24 @@ def db_user_find_by_key(key):
 # ── SETTINGS ──────────────────────────────────────────────────────────────────
 def db_setting_get(name):
     with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT value FROM settings WHERE name=%s", (name,))
-            row = cur.fetchone()
+        row = conn.execute("SELECT value FROM settings WHERE name=?", (name,)).fetchone()
     return row["value"] if row else None
 
 def db_setting_set(name, value):
     with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute("INSERT INTO settings(name,value) VALUES(%s,%s) ON CONFLICT(name) DO UPDATE SET value=EXCLUDED.value", (name, value))
+        conn.execute("INSERT OR REPLACE INTO settings(name,value) VALUES(?,?)", (name, value))
         conn.commit()
 
 # ── APK INFO ──────────────────────────────────────────────────────────────────
 def db_apk_save(file_id, filename, size_mb):
     uploaded = datetime.now().isoformat(sep=" ", timespec="seconds")
     with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                "INSERT INTO apk_info(id,file_id,filename,size_mb,uploaded) VALUES(1,%s,%s,%s,%s) ON CONFLICT(id) DO UPDATE SET file_id=EXCLUDED.file_id, filename=EXCLUDED.filename, size_mb=EXCLUDED.size_mb, uploaded=EXCLUDED.uploaded",
-                (file_id, filename, size_mb, uploaded)
-            )
+        conn.execute("INSERT OR REPLACE INTO apk_info(id,file_id,filename,size_mb,uploaded) VALUES(1,?,?,?,?)", (file_id, filename, size_mb, uploaded))
         conn.commit()
 
 def db_apk_get():
     with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT * FROM apk_info WHERE id=1")
-            row = cur.fetchone()
+                    row = conn.execute("SELECT * FROM apk_info WHERE id=1").fetchone()
     if not row:
         return None
     return {"file_id": row["file_id"], "filename": row["filename"],
@@ -302,8 +255,7 @@ def db_apk_get():
 
 def db_apk_delete():
     with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute("DELETE FROM apk_info WHERE id=1")
+        conn.execute("DELETE FROM apk_info WHERE id=1")
         conn.commit()
 
 # ── SPAM ──────────────────────────────────────────────────────────────────────
@@ -784,9 +736,7 @@ async def admin_list_keys(call: CallbackQuery):
 
     # Активные пользователи с ключами
     with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT * FROM users WHERE expires > %s ORDER BY expires DESC", (datetime.now().isoformat(),))
-            rows = cur.fetchall()
+        rows = conn.execute("SELECT * FROM users WHERE expires > ? ORDER BY expires DESC", (datetime.now().isoformat(),)).fetchall()
     if rows:
         active_lines = ["\n<b>✅ Активные пользователи:</b>"]
         for r in rows:
@@ -1423,9 +1373,7 @@ async def subscription_checker():
         try:
             now = datetime.now()
             with get_conn() as conn:
-                with conn.cursor() as cur2:
-                    cur2.execute("SELECT * FROM users")
-                    all_users = cur2.fetchall()
+                                    all_users = list(conn.execute("SELECT * FROM users").fetchall())
 
             for row in all_users:
                 uid      = row["user_id"]
@@ -1500,8 +1448,7 @@ async def subscription_checker():
                             db_setting_set(f"expired_{uid}_{key_used}", "1")
                         except Exception: pass
                         with get_conn() as conn:
-                            with conn.cursor() as cur:
-                                cur.execute("DELETE FROM users WHERE user_id=%s", (uid,))
+                            conn.execute("DELETE FROM users WHERE user_id=?", (uid,))
                             conn.commit()
 
         except Exception as e:
@@ -1610,9 +1557,7 @@ async def handle_check_key(request):
 
     # Сначала ищем в активных пользователях (уже активированный ключ)
     with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT * FROM users WHERE key=%s", (key,))
-            row = cur.fetchone()
+        row = conn.execute("SELECT * FROM users WHERE key=?", (key,)).fetchone()
     if row:
         expires = datetime.fromisoformat(row["expires"])
         if datetime.now() > expires:
@@ -1627,9 +1572,7 @@ async def handle_check_key(request):
 
     # Ищем в keys (ещё не активированный ключ)
     with get_conn() as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT * FROM keys WHERE key=%s", (key,))
-            krow = cur.fetchone()
+        krow = conn.execute("SELECT * FROM keys WHERE key=?", (key,)).fetchone()
     if not krow:
         return aiohttp_web.Response(text='{"valid":false,"reason":"not_found"}', content_type="application/json")
 
