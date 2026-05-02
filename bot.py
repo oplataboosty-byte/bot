@@ -24,14 +24,22 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 
-BOT_TOKEN   = "8601640788:AAFmh2jGX3VrP_jVuiKnfjXE7BH6wZNetgQ"
+BOT_TOKEN   = os.environ.get("BOT_TOKEN", "8601640788:AAEkBsNOTY_tc8TFP8fAgZIKxmRmYgPZqeI")
 OWNER_ID    = 8533402137
 SUPPORT_BOT = "https://t.me/YrenerSupbot"
 PAYMENT_URL   = "https://funpay.com/lots/offer?id=67242489"
 ROULETTE_URL  = "https://yrenertrial.netlify.app"
-DATABASE_URL = os.environ.get("DATABASE_URL", "")
+# Пробуем публичный URL если задан, иначе внутренний
+DATABASE_URL = (
+    os.environ.get("DATABASE_PUBLIC_URL") or
+    os.environ.get("DATABASE_URL") or
+    ""
+)
 if not DATABASE_URL:
     raise RuntimeError("DATABASE_URL не задан! Добавьте переменную в Railway.")
+# Добавляем SSL для публичного подключения
+if "rlwy.net" in DATABASE_URL and "sslmode" not in DATABASE_URL:
+    DATABASE_URL += "?sslmode=require"
 WEB_PORT    = int(_os.environ.get("PORT", 8080))
 
 APK_FILE_ID: str | None = None
